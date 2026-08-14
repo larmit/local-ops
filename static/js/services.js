@@ -37,8 +37,9 @@ let discoveryNeedsBaseline = true;
 setChildren(portDiscoveryIcon, icon('activity', 17));
 
 function serviceSnapshotHealthy(data) {
+  const monitorComponents = new Set(['services', 'processes', 'process-monitor']);
   return !(data.degradedReasons || [])
-    .some(item => item && item.component === 'services');
+    .some(item => item && monitorComponents.has(item.component));
 }
 
 function serviceKey(svc) {

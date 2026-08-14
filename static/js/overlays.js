@@ -4,7 +4,7 @@
    ============================================================ */
 import { $, el, setText, setChildren, icon, escapeHtml,
   post, put, del, act, toast, openLayer, closeLayer,
-  GLYPHS, findApp, bumpMutationEpoch } from './core.js';
+  GLYPHS, findApp, bumpMutationEpoch, state } from './core.js';
 
 /* ---------------- DOM 引用 ---------------- */
 const appModalMask = $('#appModalMask'), appModal = $('#appModal'), appModalTitle = $('#appModalTitle');
@@ -79,13 +79,15 @@ confirmMask.addEventListener('mousedown', e => { if (e.target === confirmMask) c
 
 /* ---------------- 结束进程确认 ---------------- */
 export function confirmKill(svc) {
+  const windows = String(state.data?.platform || '').startsWith('win');
   openConfirm({
     title: '结束进程',
     bodyHtml: '确定要结束进程 <b>' + escapeHtml(svc.name || '') + '</b> 吗？' +
       '<div class="confirm-detail mono">PID ' + escapeHtml(String(svc.pid)) +
-      (svc.port ? ' · 端口 :' + escapeHtml(String(svc.port)) : '') + '</div>',
+      (svc.port ? ' · 端口 :' + escapeHtml(String(svc.port)) : '') + '</div>' +
+      (windows ? '<div class="confirm-detail">Windows 会立即终止该进程。</div>' : ''),
     okText: '结束',
-    showForce: true,
+    showForce: !windows,
     onOk: async force => {
       await act(post('/api/kill', { pid: svc.pid, force }));
     },

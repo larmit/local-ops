@@ -2,6 +2,7 @@ import json
 import os
 import shlex
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -30,6 +31,36 @@ class ParsingTests(unittest.TestCase):
     def test_windows_pid_alive_uses_process_handle(self):
         self.assertTrue(server.pid_alive(os.getpid()))
         self.assertFalse(server.pid_alive(99_999_999))
+
+    def test_windows_netstat_parser_is_locale_independent_and_ipv6_aware(self):
+        output = """
+  TCP    0.0.0.0:8000         0.0.0.0:0       LISTENING       101
+  TCP    [::1]:5173           [::]:0          侦听            202
+  TCP    127.0.0.1:9000       203.0.113.8:443  ESTABLISHED     303
+  UDP    0.0.0.0:5353         *:*                             404
+"""
+        listeners = server.parse_windows_netstat(output)
+        self.assertEqual(listeners, {
+            (101, 8000): {"0.0.0.0"},
+            (202, 5173): {"::1"},
+        })
+        self.assertEqual(
+            server.listener_open_host(listeners, 5173, {202}), "localhost")
+
+    @unittest.skipUnless(server.IS_WINDOWS, "Win32 进程快照")
+    def test_windows_process_snapshot_exposes_current_process_and_sid(self):
+        snapshot = server.ps_snapshot({os.getpid()}, with_uid=True)
+        current = snapshot[os.getpid()]
+        self.assertEqual(current["uid"], server.SELF_UID)
+        self.assertEqual(server.process_uid(os.getpid()), server.SELF_UID)
+        self.assertIn("python", current["comm"].casefold())
+        self.assertIn("test", current["args"].casefold())
+        self.assertEqual(os.path.normcase(current["cwd"]),
+                         os.path.normcase(os.getcwd()))
+        self.assertIsInstance(current["ppid"], int)
+        self.assertGreaterEqual(current["etime"], 0)
+        self.assertGreaterEqual(current["cpu"], 0)
+        self.assertGreaterEqual(current["mem"], 0)
 
     def test_listener_scan_preserves_ipv6_loopback_for_open_links(self):
         output = """COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME
@@ -75,6 +106,17 @@ class OriginAttributionTests(unittest.TestCase):
         )
         origin = server.attribute_origin(100, table)
         self.assertEqual(origin, {"label": "VS Code", "icon": "code"})
+
+    @unittest.skipUnless(server.IS_WINDOWS, "Windows 父进程溯源")
+    def test_windows_terminal_parent_is_named_from_executable(self):
+        table = self.table(
+            (100, 90, r"C:\Program Files\nodejs\node.exe server.js"),
+            (90, 80, r'"C:\Program Files\WindowsApps\WindowsTerminal.exe"'),
+            (80, 0, "System"),
+        )
+        origin = server.attribute_origin(100, table)
+        self.assertEqual(
+            origin, {"label": "Windows Terminal", "icon": "terminal"})
 
     def test_iterm_bundle_uses_terminal_icon(self):
         table = self.table(
@@ -604,8 +646,8 @@ class RuntimeStorageTests(unittest.TestCase):
 
 
 class ProcessIdentityTests(unittest.TestCase):
-    @unittest.skipUnless(server.IS_WINDOWS, "Windows Phase 1 显式生命周期边界")
-    def test_windows_phase_one_rejects_managed_start_explicitly(self):
+    @unittest.skipUnless(server.IS_WINDOWS, "Windows Phase 2 显式生命周期边界")
+    def test_windows_phase_two_rejects_managed_start_explicitly(self):
         ok, error, proc, pgid, token = server.start_app({"id": "deadbeef"})
         self.assertFalse(ok)
         self.assertIn("Phase 3", error)
@@ -869,6 +911,71 @@ class LaunchEnvironmentTests(unittest.TestCase):
 
 
 class StateTests(unittest.TestCase):
+    def test_windows_monitor_failure_marks_state_degraded(self):
+        reason = {
+            "component": "processes",
+            "error": "Windows 进程快照失败: denied",
+        }
+        with mock.patch.object(server, "build_services",
+                               return_value=([], set())), \
+                mock.patch.object(server, "build_watched", return_value=[]), \
+                mock.patch.object(server, "build_apps", return_value=[]), \
+                mock.patch.object(server, "windows_monitor_errors",
+                                  return_value=[reason]), \
+                mock.patch.object(server, "list_themes", return_value=[]):
+            state = server.build_state(server.Config.DEFAULT, 9600)
+
+        self.assertTrue(state["degraded"])
+        self.assertIn(reason, state["degradedReasons"])
+
+    @unittest.skipUnless(server.IS_WINDOWS, "Windows PE GUI/Console 分组")
+    def test_windows_gui_listener_is_background_but_dev_runtime_stays_mine(self):
+        with mock.patch.object(server, "windows_executable_subsystem",
+                               return_value=2):
+            self.assertEqual(server.classify_group(
+                "gui:1", "desktop.exe", r"C:\Apps\desktop.exe", "", None,
+                set()), "background")
+            self.assertEqual(server.classify_group(
+                "python:1", "python.exe", r"C:\Python\python.exe", "", None,
+                set()), "mine")
+
+    @unittest.skipUnless(server.IS_WINDOWS, "Windows 真实端口/进程联结")
+    def test_windows_real_listener_is_visible_with_process_metadata(self):
+        probe = socket.socket()
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+        probe.close()
+        with tempfile.TemporaryDirectory() as td:
+            proc = subprocess.Popen(
+                [sys.executable, "-m", "http.server", str(port),
+                 "--bind", "127.0.0.1"],
+                cwd=td, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            try:
+                deadline = time.time() + 5
+                service = None
+                while time.time() < deadline and service is None:
+                    services, _ = server.build_services(server.Config.DEFAULT)
+                    service = next((
+                        item for item in services
+                        if item["pid"] == proc.pid and item["port"] == port
+                    ), None)
+                    if service is None:
+                        time.sleep(0.15)
+                self.assertIsNotNone(service)
+                self.assertEqual(os.path.normcase(service["cwd"]),
+                                 os.path.normcase(td))
+                self.assertEqual(service["project"], os.path.basename(td))
+                self.assertIn("http.server", service["cmd"])
+                self.assertEqual(service["group"], "mine")
+                self.assertGreaterEqual(service["mem"], 0)
+                self.assertGreaterEqual(service["uptimeSec"], 0)
+                self.assertFalse(server.windows_monitor_errors())
+            finally:
+                if proc.poll() is None:
+                    proc.terminate()
+                proc.wait(timeout=5)
+
     def test_app_and_service_expose_ipv6_aware_open_host(self):
         app = {**server.Config.APP_DEFAULT, "id": "vite", "name": "公众号排版",
                "command": "npm run dev", "cwd": "/tmp/vite", "port": 5173}

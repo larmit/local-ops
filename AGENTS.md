@@ -101,9 +101,10 @@
 
 ## 后端实现要点
 
-- **端口扫描**：`lsof -iTCP -sTCP:LISTEN -P -n`，按 `(pid, port)` 去重（IPv4/6 重复行）。lsof 的 COMMAND 列会截断，名称以 ps 的 comm 为准。
-- **进程详情**：批量 `ps -o pid=,user=,comm=,args=,%cpu=,%mem=,etime= -p <逗号分隔pid>`；只保留 `user == 当前用户`。
-- **cwd**：`lsof -a -p <逗号分隔pid> -d cwd -Fn`，解析 `n` 行。
+- **端口扫描**：macOS 用 `lsof -iTCP -sTCP:LISTEN -P -n`；Windows 用系统 `netstat -ano -p TCP`，以远端端口 0 判定监听行，不依赖本地化的 `LISTENING` 文本。两者均按 `(pid, port)` 去重并保留 IPv4/IPv6 绑定地址。
+- **进程详情**：macOS 批量读 `ps`；Windows 用 Toolhelp32 + `QueryFullProcessImageNameW` / `NtQueryInformationProcess` / `GetProcessTimes` / `GetProcessMemoryInfo`，0.8s 内复用快照并根据两次 CPU time 样本计算负载。
+- **当前用户**：macOS 比较 UID；Windows 读取每个进程访问令牌的完整 SID 二进制内容，以不透明整数流经现有 `uid` 字段。
+- **cwd**：macOS 用 `lsof -d cwd`；Windows 对可读进程从 PEB/RTL_USER_PROCESS_PARAMETERS 只读取当前目录，同时支持 64 位与 WOW64，无权访问时返回 null。
 - **etime 解析**：`[[dd-]hh:]mm:ss` → 秒。
 - **分组逻辑**（按优先级）：用户 `promoted` → `mine`；进程名含开发关键词（python node ollama docker 等，见 `DEV_KEYWORDS`，只匹配 name 不匹配 args，避免 VS Code `--ms-enable-electron-run-as-node` 这类误伤）→ `mine`（覆盖下方规则，Ollama/Docker 这类在 .app 内的守护进程仍算服务）；可执行路径含 `.app/Contents/`（GUI 应用及其 helper）→ `background`；comm 以系统路径开头（`/usr/libexec/`、`/usr/sbin/`、`/sbin/`、`/System/`、`/usr/lib/`）→ `background`；comm 或 cwd 含 `/Library/Containers/`（沙盒应用）→ `background`；其余默认 `mine`。`hidden` 仅是标记，照常返回。
 - **关注进程**：`ps -axo pid=,uid=,comm=,args=,etime=,%cpu=,%mem=`，args 小写包含关键字即命中，只保留当前用户并排除自身及 ps/lsof。
@@ -116,10 +117,10 @@
 - **日志**：单文件超过 10MB 时 copy-truncate，保留 3 份轮转备份；日志 API 从文件尾部分块读取，不将整个日志读入内存。
 - **keep-alive 陷阱**：POST start/stop 前端会带 `{}` body，handler 必须 `discard_body()` 读掉——否则残留字节污染同一 keep-alive 连接的下一个请求（method 解析成 `{}GET` → 501，前端显示断连横幅）。新增不读 body 的 POST 路由时同样处理。
 - **运行目录**：macOS 默认使用 Library，Windows 默认使用 `%LOCALAPPDATA%\LocalOps`；`CONSOLE_DATA_DIR` / `CONSOLE_LOG_DIR` 可显式覆盖，覆盖时对应目录不自动迁移旧 `data/`。
-- **Windows 阶段边界**：Phase 1 保证 HTTP/UI、存储、单实例和自身重启；进程/端口监控为 Phase 2，Job Object 受管应用生命周期为 Phase 3，Windows 原生选择器与命令适配为 Phase 4。未实现能力必须显式降级，不得伪装成成功。
+- **Windows 阶段边界**：Phase 1 的 HTTP/UI、存储、单实例/自身重启和 Phase 2 的进程/端口监控已启用。Job Object 受管应用生命周期为 Phase 3，Windows 原生选择器与命令适配为 Phase 4。未实现能力必须显式降级，不得伪装成成功。
 - **配置**：读写加线程锁；写入用临时文件 + `os.replace` 防损坏；`schemaVersion` 逐版显式迁移；`.bak` 保留上一份良好版本。主配置与备份均不可读时进入只读保护，不覆盖原文件。
 - **项目识别**：仅读取项目根目录下不超过 2MB 的已知配置/入口文件，不安装依赖、不执行配置、不扫描整个目录；显式 CLI 端口优先于框架默认端口。
-- **kill 安全**：只允许结束当前用户的进程。
+- **kill 安全**：只允许结束当前用户的进程。Windows 在持有 `PROCESS_TERMINATE|PROCESS_QUERY_LIMITED_INFORMATION` 句柄后二次比较 SID，防止 PID 复用；单进程结束为立即 `TerminateProcess`，不伪装 SIGTERM。
 
 ## 配置 schema
 ```json

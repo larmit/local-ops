@@ -105,6 +105,13 @@ class FrontendStructureParser(HTMLParser):
 
 
 class FrontendAccessibilityContractTests(unittest.TestCase):
+    def test_windows_monitor_degradation_and_immediate_kill_are_explicit(self):
+        services = (ROOT / "static/js/services.js").read_text(encoding="utf-8")
+        overlays = (ROOT / "static/js/overlays.js").read_text(encoding="utf-8")
+        self.assertIn("'services', 'processes', 'process-monitor'", services)
+        self.assertIn("showForce: !windows", overlays)
+        self.assertIn("Windows 会立即终止该进程", overlays)
+
     def test_monitoring_tables_have_named_aria_structure(self):
         parser = FrontendStructureParser()
         parser.feed((ROOT / "static/index.html").read_text(encoding="utf-8"))

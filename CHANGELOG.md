@@ -11,6 +11,8 @@
 ### Added
 
 - Windows Phase 1 跨平台基础：新增 `start.ps1` / `start.cmd`、LocalAppData 数据与日志目录、Win32 命名 Mutex 单实例、Windows 存活检查和自身重启，并增加 Windows CI 及发行包入口。
+- Windows Phase 2 服务监控：用 `netstat` 获取真实 TCP 监听，用 Win32/NT 只读 API 批量获取进程路径、命令行、PPID、工作目录、CPU/内存与运行时长，支持 Windows 终端/编辑器溯源和 PE GUI/控制台分组。
+- Windows 进程身份现通过访问令牌 SID 校验，服务监控可立即结束当前用户的单个进程，并在持有终止句柄后二次校验以防 PID 复用。
 - 顶栏新增 GitHub 仓库图标按钮，点击在新标签页打开项目源码仓库。
 - 增加用户/开发文档、备份恢复和升级卸载指南。
 - 布局升级为指挥台结构：左侧图标导航轨、启动台与服务监控双视图 KPI 概览卡（含 CPU/内存火花线）、右侧实时动态/实时告警与端口/资源 TOP 5 信息栏、小贴士、页头快捷操作，以及服务/任务分区筛选芯片；服务表格增加 PID、状态列与 CPU 迷你负载条。结构样式集中于 `base.css`。
@@ -30,7 +32,7 @@
 
 ### Changed
 
-- Windows 端在 Phase 1 中对未启用的进程/端口监控和受管应用启停返回明确的阶段化提示；macOS 现有行为保持不变。
+- Windows Phase 2 启用进程/端口监控；受管应用启停仍显式指向 Phase 3，macOS 现有行为保持不变。
 - 默认将配置/图标移至 `~/Library/Application Support/总控台`，日志移至 `~/Library/Logs/总控台`。新目标不存在时仅首次复制旧 `data/`，不删除原文件。
 - `config.json.bak` 现保留修改前的上一份良好配置，而不是与主配置相同的副本。
 - 运行目录权限收紧为 `0700`，配置、图标和日志文件为 `0600`。

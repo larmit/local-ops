@@ -41,6 +41,130 @@ if IS_WINDOWS:
 else:
     import fcntl
 
+
+if IS_WINDOWS:
+    _KERNEL32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _ADVAPI32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    _NTDLL = ctypes.WinDLL("ntdll", use_last_error=True)
+    _PSAPI = ctypes.WinDLL("psapi", use_last_error=True)
+
+    _PROCESS_QUERY_INFORMATION = 0x0400
+    _PROCESS_VM_READ = 0x0010
+    _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    _PROCESS_TERMINATE = 0x0001
+    _TOKEN_QUERY = 0x0008
+    _TOKEN_USER = 1
+    _TH32CS_SNAPPROCESS = 0x00000002
+    _PROCESS_COMMAND_LINE_INFORMATION = 60
+    _INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+
+    class _PROCESSENTRY32W(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD),
+            ("th32DefaultHeapID", ctypes.c_size_t),
+            ("th32ModuleID", wintypes.DWORD),
+            ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD),
+            ("pcPriClassBase", wintypes.LONG),
+            ("dwFlags", wintypes.DWORD),
+            ("szExeFile", wintypes.WCHAR * 260),
+        ]
+
+    class _PROCESS_MEMORY_COUNTERS(ctypes.Structure):
+        _fields_ = [
+            ("cb", wintypes.DWORD),
+            ("PageFaultCount", wintypes.DWORD),
+            ("PeakWorkingSetSize", ctypes.c_size_t),
+            ("WorkingSetSize", ctypes.c_size_t),
+            ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+            ("PagefileUsage", ctypes.c_size_t),
+            ("PeakPagefileUsage", ctypes.c_size_t),
+        ]
+
+    class _MEMORYSTATUSEX(ctypes.Structure):
+        _fields_ = [
+            ("dwLength", wintypes.DWORD),
+            ("dwMemoryLoad", wintypes.DWORD),
+            ("ullTotalPhys", ctypes.c_ulonglong),
+            ("ullAvailPhys", ctypes.c_ulonglong),
+            ("ullTotalPageFile", ctypes.c_ulonglong),
+            ("ullAvailPageFile", ctypes.c_ulonglong),
+            ("ullTotalVirtual", ctypes.c_ulonglong),
+            ("ullAvailVirtual", ctypes.c_ulonglong),
+            ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+        ]
+
+    class _UNICODE_STRING(ctypes.Structure):
+        _fields_ = [
+            ("Length", wintypes.USHORT),
+            ("MaximumLength", wintypes.USHORT),
+            ("Buffer", wintypes.LPWSTR),
+        ]
+
+    class _PROCESS_BASIC_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("Reserved1", wintypes.LPVOID),
+            ("PebBaseAddress", wintypes.LPVOID),
+            ("Reserved2", wintypes.LPVOID * 2),
+            ("UniqueProcessId", ctypes.c_size_t),
+            ("InheritedFromUniqueProcessId", wintypes.LPVOID),
+        ]
+
+    _KERNEL32.OpenProcess.argtypes = (
+        wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    _KERNEL32.OpenProcess.restype = wintypes.HANDLE
+    _KERNEL32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    _KERNEL32.CloseHandle.restype = wintypes.BOOL
+    _KERNEL32.CreateToolhelp32Snapshot.argtypes = (
+        wintypes.DWORD, wintypes.DWORD)
+    _KERNEL32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    _KERNEL32.Process32FirstW.argtypes = (
+        wintypes.HANDLE, ctypes.POINTER(_PROCESSENTRY32W))
+    _KERNEL32.Process32FirstW.restype = wintypes.BOOL
+    _KERNEL32.Process32NextW.argtypes = (
+        wintypes.HANDLE, ctypes.POINTER(_PROCESSENTRY32W))
+    _KERNEL32.Process32NextW.restype = wintypes.BOOL
+    _KERNEL32.QueryFullProcessImageNameW.argtypes = (
+        wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR,
+        ctypes.POINTER(wintypes.DWORD))
+    _KERNEL32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+    _KERNEL32.GetProcessTimes.argtypes = (
+        wintypes.HANDLE, ctypes.POINTER(wintypes.FILETIME),
+        ctypes.POINTER(wintypes.FILETIME), ctypes.POINTER(wintypes.FILETIME),
+        ctypes.POINTER(wintypes.FILETIME))
+    _KERNEL32.GetProcessTimes.restype = wintypes.BOOL
+    _KERNEL32.GlobalMemoryStatusEx.argtypes = (
+        ctypes.POINTER(_MEMORYSTATUSEX),)
+    _KERNEL32.GlobalMemoryStatusEx.restype = wintypes.BOOL
+    _KERNEL32.TerminateProcess.argtypes = (wintypes.HANDLE, wintypes.UINT)
+    _KERNEL32.TerminateProcess.restype = wintypes.BOOL
+    _KERNEL32.ReadProcessMemory.argtypes = (
+        wintypes.HANDLE, wintypes.LPCVOID, wintypes.LPVOID, ctypes.c_size_t,
+        ctypes.POINTER(ctypes.c_size_t))
+    _KERNEL32.ReadProcessMemory.restype = wintypes.BOOL
+    _ADVAPI32.OpenProcessToken.argtypes = (
+        wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE))
+    _ADVAPI32.OpenProcessToken.restype = wintypes.BOOL
+    _ADVAPI32.GetTokenInformation.argtypes = (
+        wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD))
+    _ADVAPI32.GetTokenInformation.restype = wintypes.BOOL
+    _ADVAPI32.GetLengthSid.argtypes = (wintypes.LPVOID,)
+    _ADVAPI32.GetLengthSid.restype = wintypes.DWORD
+    _NTDLL.NtQueryInformationProcess.argtypes = (
+        wintypes.HANDLE, wintypes.ULONG, wintypes.LPVOID, wintypes.ULONG,
+        ctypes.POINTER(wintypes.ULONG))
+    _NTDLL.NtQueryInformationProcess.restype = wintypes.LONG
+    _PSAPI.GetProcessMemoryInfo.argtypes = (
+        wintypes.HANDLE, ctypes.POINTER(_PROCESS_MEMORY_COUNTERS),
+        wintypes.DWORD)
+    _PSAPI.GetProcessMemoryInfo.restype = wintypes.BOOL
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 VERSION_PATH = os.path.join(BASE_DIR, "VERSION")
 LEGACY_DATA_DIR = os.path.join(BASE_DIR, "data")
@@ -117,6 +241,59 @@ def read_project_version(path=VERSION_PATH):
 
 APP_VERSION, VERSION_LOAD_ERROR = read_project_version()
 
+
+def _windows_process_identity_from_handle(handle):
+    token = wintypes.HANDLE()
+    try:
+        if not _ADVAPI32.OpenProcessToken(
+                handle, _TOKEN_QUERY, ctypes.byref(token)):
+            return None
+        needed = wintypes.DWORD()
+        _ADVAPI32.GetTokenInformation(
+            token, _TOKEN_USER, None, 0, ctypes.byref(needed))
+        if needed.value <= 0 or needed.value > 64 * 1024:
+            return None
+        buffer = ctypes.create_string_buffer(needed.value)
+        if not _ADVAPI32.GetTokenInformation(
+                token, _TOKEN_USER, buffer, needed, ctypes.byref(needed)):
+            return None
+        sid_pointer = ctypes.cast(
+            buffer, ctypes.POINTER(ctypes.c_void_p))[0]
+        if not sid_pointer:
+            return None
+        sid_length = int(_ADVAPI32.GetLengthSid(sid_pointer))
+        if sid_length <= 0 or sid_length > needed.value:
+            return None
+        sid_bytes = ctypes.string_at(sid_pointer, sid_length)
+        return int.from_bytes(sid_bytes, "big")
+    finally:
+        if token:
+            _KERNEL32.CloseHandle(token)
+
+
+def _windows_process_identity(pid):
+    """返回由 Windows 访问令牌 SID 完整派生的不透明整数。
+
+    整数形式仅用于兼容现有 ``uid`` 数据流；安全判定使用的是
+    SID 完整二进制内容，不是用户名、PID 或会话号。
+    """
+    if not IS_WINDOWS:
+        return None
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return None
+    if pid <= 0:
+        return None
+    handle = _KERNEL32.OpenProcess(
+        _PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return None
+    try:
+        return _windows_process_identity_from_handle(handle)
+    finally:
+        _KERNEL32.CloseHandle(handle)
+
 HOST = "127.0.0.1"
 PORT_START = 9600
 PORT_TRIES = 10
@@ -134,9 +311,12 @@ RUN_TOKEN_ARG_PREFIX = "console-run:"
 TASK_CANCELED_EXIT_CODE = 130
 
 SELF_PID = os.getpid()
-# Windows 没有 POSIX UID；Phase 2 的进程适配器会用访问令牌 SID 做同用户校验。
-# 这里保留整数兼容字段，使 HTTP/配置层可先在 Windows 安全启动。
-SELF_UID = os.getuid() if hasattr(os, "getuid") else 0
+if IS_WINDOWS:
+    SELF_UID = _windows_process_identity(SELF_PID)
+    if SELF_UID is None:
+        raise OSError("无法读取当前 Windows 用户 SID，已拒绝不安全启动")
+else:
+    SELF_UID = os.getuid()
 ICON_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".ico")
 LOG = logging.getLogger("console")
 LOG_LOCK = threading.RLock()
@@ -679,6 +859,30 @@ def run_cmd(args, timeout=SUBPROCESS_TIMEOUT):
         return ""
 
 
+_WINDOWS_MONITOR_ERROR_LOCK = threading.Lock()
+_WINDOWS_MONITOR_ERRORS = {}
+
+
+def _set_windows_monitor_error(component, error=None):
+    if not IS_WINDOWS:
+        return
+    with _WINDOWS_MONITOR_ERROR_LOCK:
+        if error:
+            _WINDOWS_MONITOR_ERRORS[component] = str(error)
+        else:
+            _WINDOWS_MONITOR_ERRORS.pop(component, None)
+
+
+def windows_monitor_errors():
+    if not IS_WINDOWS:
+        return []
+    with _WINDOWS_MONITOR_ERROR_LOCK:
+        return [
+            {"component": component, "error": error}
+            for component, error in sorted(_WINDOWS_MONITOR_ERRORS.items())
+        ]
+
+
 def parse_etime(s):
     """ps 的 etime：[[dd-]hh:]mm:ss → 秒。异常返回 0。"""
     try:
@@ -736,6 +940,65 @@ def parse_lsof_listeners(output):
     return found
 
 
+def _windows_endpoint(value):
+    """解析 netstat 端点，返回 ``(host, port)`` 或 ``(None, None)``。"""
+    value = (value or "").strip()
+    try:
+        if value.startswith("["):
+            close = value.rfind("]:")
+            if close < 0:
+                return None, None
+            return value[1:close], int(value[close + 2:])
+        host, port = value.rsplit(":", 1)
+        return host, int(port)
+    except (ValueError, TypeError):
+        return None, None
+
+
+def parse_windows_netstat(output):
+    """Windows ``netstat -ano -p TCP`` → ``{(pid, port): {host}}``。
+
+    不依赖本地化的 ``LISTENING`` 文本；TCP 监听行的远端端口
+    固定为 0，因此中英文 Windows 上都可稳定判定。
+    """
+    found = {}
+    for line in (output or "").splitlines():
+        parts = line.split()
+        if len(parts) < 5 or parts[0].upper() != "TCP":
+            continue
+        local_host, local_port = _windows_endpoint(parts[1])
+        _, remote_port = _windows_endpoint(parts[2])
+        try:
+            pid = int(parts[-1])
+        except (TypeError, ValueError):
+            continue
+        if (local_host is None or not isinstance(local_port, int)
+                or not 1 <= local_port <= 65535 or remote_port != 0
+                or pid <= 0):
+            continue
+        found.setdefault((pid, local_port), set()).add(local_host)
+    return found
+
+
+def _windows_listener_snapshot():
+    system_root = os.environ.get("SystemRoot") or r"C:\Windows"
+    executable = os.path.join(system_root, "System32", "netstat.exe")
+    try:
+        completed = subprocess.run(
+            [executable, "-ano", "-p", "TCP"], capture_output=True,
+            text=True, errors="replace", timeout=SUBPROCESS_TIMEOUT,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        if completed.returncode != 0:
+            raise OSError("netstat 退出 %d" % completed.returncode)
+        listeners = parse_windows_netstat(completed.stdout)
+        _set_windows_monitor_error("services", None)
+        return listeners
+    except Exception as exc:
+        _set_windows_monitor_error("services", "Windows 端口扫描失败: %s" % exc)
+        LOG.exception("Windows 端口扫描失败")
+        return {}
+
+
 def scan_listeners():
     """lsof 监听快照 → {(pid, port): {bind_host, ...}}。
 
@@ -743,8 +1006,7 @@ def scan_listeners():
     供前端区分仅监听 ``::1`` 的服务（需通过 localhost 打开）。
     """
     if IS_WINDOWS:
-        # Phase 2 接入 Windows 端口/进程监控；Phase 1 避免轮询 POSIX 工具报错。
-        return {}
+        return _windows_listener_snapshot()
     out = run_cmd(["lsof", "-iTCP", "-sTCP:LISTEN", "-P", "-n"])
     return parse_lsof_listeners(out)
 
@@ -777,6 +1039,262 @@ def listener_open_host(listeners, port, pids=None):
     return "localhost" if ipv6_loopback_only else "127.0.0.1"
 
 
+_WINDOWS_PROCESS_CACHE_LOCK = threading.Lock()
+_WINDOWS_PROCESS_CACHE = {
+    "mono": 0.0,
+    "snapshot": {},
+    "cpuTimes": {},
+    "cpuMono": 0.0,
+}
+WINDOWS_PROCESS_CACHE_TTL = 0.8
+
+
+def _filetime_ticks(value):
+    return (int(value.dwHighDateTime) << 32) | int(value.dwLowDateTime)
+
+
+def _windows_process_entries():
+    snapshot = _KERNEL32.CreateToolhelp32Snapshot(_TH32CS_SNAPPROCESS, 0)
+    if not snapshot or snapshot == _INVALID_HANDLE_VALUE:
+        raise ctypes.WinError(ctypes.get_last_error())
+    result = {}
+    entry = _PROCESSENTRY32W()
+    entry.dwSize = ctypes.sizeof(entry)
+    try:
+        ok = _KERNEL32.Process32FirstW(snapshot, ctypes.byref(entry))
+        if not ok:
+            raise ctypes.WinError(ctypes.get_last_error())
+        while ok:
+            pid = int(entry.th32ProcessID)
+            if pid > 0:
+                result[pid] = {
+                    "ppid": int(entry.th32ParentProcessID),
+                    "exe": str(entry.szExeFile or ""),
+                }
+            ok = _KERNEL32.Process32NextW(snapshot, ctypes.byref(entry))
+    finally:
+        _KERNEL32.CloseHandle(snapshot)
+    return result
+
+
+def _windows_process_image(handle):
+    size = wintypes.DWORD(32768)
+    buffer = ctypes.create_unicode_buffer(size.value)
+    if not _KERNEL32.QueryFullProcessImageNameW(
+            handle, 0, buffer, ctypes.byref(size)):
+        return None
+    return buffer.value[:size.value] or None
+
+
+def _windows_process_command_line(handle):
+    needed = wintypes.ULONG()
+    _NTDLL.NtQueryInformationProcess(
+        handle, _PROCESS_COMMAND_LINE_INFORMATION, None, 0,
+        ctypes.byref(needed))
+    if needed.value <= ctypes.sizeof(_UNICODE_STRING) or needed.value > 1024 * 1024:
+        return None
+    buffer = ctypes.create_string_buffer(needed.value)
+    status = _NTDLL.NtQueryInformationProcess(
+        handle, _PROCESS_COMMAND_LINE_INFORMATION, buffer, needed,
+        ctypes.byref(needed))
+    if status != 0:
+        return None
+    value = _UNICODE_STRING.from_buffer(buffer)
+    if not value.Buffer or value.Length <= 0:
+        return None
+    try:
+        return ctypes.wstring_at(value.Buffer, value.Length // 2)
+    except (ValueError, OSError):
+        return None
+
+
+def _windows_read_process_memory(handle, address, size):
+    if not address or size <= 0 or size > 1024 * 1024:
+        return None
+    buffer = ctypes.create_string_buffer(size)
+    read = ctypes.c_size_t()
+    if not _KERNEL32.ReadProcessMemory(
+            handle, ctypes.c_void_p(address), buffer, size,
+            ctypes.byref(read)) or read.value != size:
+        return None
+    return buffer.raw
+
+
+def _windows_process_cwd(pid):
+    """尽力读取进程 PEB 中的 CurrentDirectory.DosPath。
+
+    Windows 没有公开的跨进程 cwd API；这里仅对可读的同架构/
+    WOW64 进程读取 NT 进程参数，失败时安全返回 None。
+    """
+    handle = _KERNEL32.OpenProcess(
+        _PROCESS_QUERY_INFORMATION | _PROCESS_VM_READ, False, int(pid))
+    if not handle:
+        return None
+    try:
+        returned = wintypes.ULONG()
+        wow64_peb = ctypes.c_size_t()
+        wow64_status = _NTDLL.NtQueryInformationProcess(
+            handle, 26, ctypes.byref(wow64_peb), ctypes.sizeof(wow64_peb),
+            ctypes.byref(returned))
+        if wow64_status == 0 and wow64_peb.value:
+            peb_address = wow64_peb.value
+            pointer_size = 4
+            parameters_offset = 0x10
+            cwd_offset = 0x24
+            unicode_pointer_offset = 4
+        else:
+            basic = _PROCESS_BASIC_INFORMATION()
+            status = _NTDLL.NtQueryInformationProcess(
+                handle, 0, ctypes.byref(basic), ctypes.sizeof(basic),
+                ctypes.byref(returned))
+            if status != 0 or not basic.PebBaseAddress:
+                return None
+            peb_address = int(basic.PebBaseAddress)
+            pointer_size = ctypes.sizeof(ctypes.c_void_p)
+            parameters_offset = 0x20 if pointer_size == 8 else 0x10
+            cwd_offset = 0x38 if pointer_size == 8 else 0x24
+            unicode_pointer_offset = 8 if pointer_size == 8 else 4
+
+        pointer_bytes = _windows_read_process_memory(
+            handle, peb_address + parameters_offset, pointer_size)
+        if not pointer_bytes:
+            return None
+        parameters = int.from_bytes(pointer_bytes, "little")
+        header_size = unicode_pointer_offset + pointer_size
+        header = _windows_read_process_memory(
+            handle, parameters + cwd_offset, header_size)
+        if not header:
+            return None
+        length = int.from_bytes(header[0:2], "little")
+        buffer_address = int.from_bytes(
+            header[unicode_pointer_offset:unicode_pointer_offset + pointer_size],
+            "little")
+        if length <= 0 or length > 64 * 1024 or length % 2:
+            return None
+        value = _windows_read_process_memory(handle, buffer_address, length)
+        if not value:
+            return None
+        cwd = value.decode("utf-16-le", errors="strict").rstrip("\\/")
+        return cwd or None
+    except (OSError, UnicodeError, ValueError):
+        return None
+    finally:
+        _KERNEL32.CloseHandle(handle)
+
+
+def _windows_process_times(handle):
+    creation = wintypes.FILETIME()
+    exited = wintypes.FILETIME()
+    kernel = wintypes.FILETIME()
+    user = wintypes.FILETIME()
+    if not _KERNEL32.GetProcessTimes(
+            handle, ctypes.byref(creation), ctypes.byref(exited),
+            ctypes.byref(kernel), ctypes.byref(user)):
+        return None, None
+    creation_unix = _filetime_ticks(creation) / 10_000_000 - 11_644_473_600
+    cpu_seconds = (_filetime_ticks(kernel) + _filetime_ticks(user)) / 10_000_000
+    return creation_unix, cpu_seconds
+
+
+def _windows_working_set(pid, handle):
+    counters = _PROCESS_MEMORY_COUNTERS()
+    counters.cb = ctypes.sizeof(counters)
+    if _PSAPI.GetProcessMemoryInfo(
+            handle, ctypes.byref(counters), counters.cb):
+        return int(counters.WorkingSetSize)
+    stronger = _KERNEL32.OpenProcess(
+        _PROCESS_QUERY_INFORMATION | _PROCESS_VM_READ, False, int(pid))
+    if not stronger:
+        return 0
+    try:
+        counters = _PROCESS_MEMORY_COUNTERS()
+        counters.cb = ctypes.sizeof(counters)
+        if _PSAPI.GetProcessMemoryInfo(
+                stronger, ctypes.byref(counters), counters.cb):
+            return int(counters.WorkingSetSize)
+        return 0
+    finally:
+        _KERNEL32.CloseHandle(stronger)
+
+
+def _windows_total_physical_memory():
+    status = _MEMORYSTATUSEX()
+    status.dwLength = ctypes.sizeof(status)
+    if _KERNEL32.GlobalMemoryStatusEx(ctypes.byref(status)):
+        return max(1, int(status.ullTotalPhys))
+    return 1
+
+
+def _windows_process_snapshot():
+    """返回 Windows 进程快照，仅使用 Win32/NT 只读 API。"""
+    now_mono = time.monotonic()
+    with _WINDOWS_PROCESS_CACHE_LOCK:
+        cached = _WINDOWS_PROCESS_CACHE["snapshot"]
+        if (cached and now_mono - _WINDOWS_PROCESS_CACHE["mono"]
+                < WINDOWS_PROCESS_CACHE_TTL):
+            return cached
+        try:
+            entries = _windows_process_entries()
+            total_memory = _windows_total_physical_memory()
+            current_time = time.time()
+            raw = {}
+            cpu_times = {}
+            for pid, base in entries.items():
+                handle = _KERNEL32.OpenProcess(
+                    _PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+                if not handle:
+                    continue
+                try:
+                    identity = _windows_process_identity_from_handle(handle)
+                    image = _windows_process_image(handle) or base["exe"]
+                    command_line = _windows_process_command_line(handle)
+                    created, cpu_total = _windows_process_times(handle)
+                    working_set = _windows_working_set(pid, handle)
+                finally:
+                    _KERNEL32.CloseHandle(handle)
+                if cpu_total is not None:
+                    cpu_times[pid] = cpu_total
+                raw[pid] = {
+                    "uid": identity,
+                    "ppid": base["ppid"],
+                    "comm": image or base["exe"],
+                    "args": command_line or image or base["exe"],
+                    "cwd": _windows_process_cwd(pid),
+                    "cpu": 0.0,
+                    "mem": round(working_set * 100.0 / total_memory, 3),
+                    "etime": max(0, int(current_time - created))
+                    if created is not None else 0,
+                }
+
+            previous_times = _WINDOWS_PROCESS_CACHE["cpuTimes"]
+            previous_mono = _WINDOWS_PROCESS_CACHE["cpuMono"]
+            elapsed = now_mono - previous_mono if previous_mono else 0.0
+            processor_count = max(1, os.cpu_count() or 1)
+            if elapsed > 0:
+                for pid, cpu_total in cpu_times.items():
+                    previous = previous_times.get(pid)
+                    if previous is None or pid not in raw:
+                        continue
+                    percent = max(
+                        0.0, (cpu_total - previous) * 100.0
+                        / elapsed / processor_count)
+                    raw[pid]["cpu"] = round(min(percent, 100.0), 2)
+
+            _WINDOWS_PROCESS_CACHE.update({
+                "mono": now_mono,
+                "snapshot": raw,
+                "cpuTimes": cpu_times,
+                "cpuMono": now_mono,
+            })
+            _set_windows_monitor_error("processes", None)
+            return raw
+        except Exception as exc:
+            _set_windows_monitor_error(
+                "processes", "Windows 进程快照失败: %s" % exc)
+            LOG.exception("Windows 进程快照失败")
+            return {}
+
+
 def ps_snapshot(pids=None, with_uid=True):
     """批量进程信息 → {pid: {"uid","comm","args","cpu","mem","etime"}}。
 
@@ -786,7 +1304,17 @@ def ps_snapshot(pids=None, with_uid=True):
     内容；保留表头后解析时跳过表头行即可（首列非数字的行）。
     """
     if IS_WINDOWS:
-        return {}
+        snapshot = _windows_process_snapshot()
+        selected = None if pids is None else {int(pid) for pid in pids}
+        result = {}
+        for pid, info in snapshot.items():
+            if selected is not None and pid not in selected:
+                continue
+            item = dict(info)
+            if not with_uid:
+                item.pop("uid", None)
+            result[pid] = item
+        return result
     base = ["ps"]
     if pids is None:
         base.append("-ax")
@@ -841,7 +1369,12 @@ def ps_snapshot(pids=None, with_uid=True):
 def lsof_cwds(pids):
     """lsof -a -p <pids> -d cwd -Fn → {pid: cwd}。"""
     if IS_WINDOWS:
-        return {}
+        selected = {int(pid) for pid in pids}
+        return {
+            pid: info["cwd"]
+            for pid, info in _windows_process_snapshot().items()
+            if pid in selected and info.get("cwd")
+        }
     pids = [int(p) for p in pids]
     if not pids:
         return {}
@@ -900,6 +1433,11 @@ def pid_alive(pid):
 # ---------------------------------------------------------------- 状态构建
 
 SYSTEM_PATH_PREFIXES = ("/usr/libexec/", "/usr/sbin/", "/sbin/", "/System/", "/usr/lib/")
+_WINDOWS_ROOT = os.path.normcase(
+    os.environ.get("SystemRoot") or r"C:\Windows")
+WINDOWS_SYSTEM_PATH_PREFIXES = tuple(
+    os.path.normcase(os.path.join(_WINDOWS_ROOT, folder)) + os.sep
+    for folder in ("System32", "SysWOW64", "WinSxS"))
 
 # 开发服务关键词：命中 name/args 时优先归为 "mine"（覆盖 .app 规则，
 # 例如 ollama 守护进程在 Ollama.app 内、Docker 在 Docker.app 内）
@@ -911,6 +1449,32 @@ DEV_KEYWORDS = (
 )
 
 
+@functools.lru_cache(maxsize=512)
+def windows_executable_subsystem(path):
+    """返回 PE Subsystem（2=GUI，3=Console），无法确认时返回 None。"""
+    if (not IS_WINDOWS or not isinstance(path, str) or not path
+            or path.startswith("\\\\") or not os.path.isfile(path)):
+        return None
+    try:
+        with open(path, "rb") as handle:
+            dos = handle.read(64)
+            if len(dos) < 64 or dos[:2] != b"MZ":
+                return None
+            pe_offset = int.from_bytes(dos[0x3C:0x40], "little")
+            if pe_offset < 64 or pe_offset > 16 * 1024 * 1024:
+                return None
+            handle.seek(pe_offset)
+            header = handle.read(24 + 70)
+        if len(header) < 94 or header[:4] != b"PE\0\0":
+            return None
+        optional = header[24:]
+        if int.from_bytes(optional[:2], "little") not in (0x10B, 0x20B):
+            return None
+        return int.from_bytes(optional[68:70], "little")
+    except OSError:
+        return None
+
+
 def classify_group(key, name, comm, args, cwd, promoted):
     if key in promoted:
         return "mine"
@@ -920,6 +1484,11 @@ def classify_group(key, name, comm, args, cwd, promoted):
     if ".app/Contents/" in comm or ".app/Contents/" in args:
         return "background"
     if comm.startswith(SYSTEM_PATH_PREFIXES):
+        return "background"
+    if IS_WINDOWS and os.path.normcase(comm).startswith(
+            WINDOWS_SYSTEM_PATH_PREFIXES):
+        return "background"
+    if IS_WINDOWS and windows_executable_subsystem(comm) == 2:
         return "background"
     if "/Library/Containers/" in comm or "/Library/Containers/" in (cwd or ""):
         return "background"
@@ -1001,12 +1570,29 @@ _ORIGIN_BUNDLE_RE = re.compile(r"/([^/]+)\.app/Contents/MacOS/", re.I)
 
 # 终端复用器（直接以 comm 命名，不进跳过表）
 _ORIGIN_MULTIPLEXERS = {"tmux": "tmux", "screen": "screen"}
+_ORIGIN_WINDOWS_ALIASES = {
+    "code": ("VS Code", "code"),
+    "cursor": ("Cursor", "code"),
+    "trae": ("Trae", "code"),
+    "windsurf": ("Windsurf", "code"),
+    "pycharm64": ("PyCharm", "code"),
+    "idea64": ("IDEA", "code"),
+    "webstorm64": ("WebStorm", "code"),
+    "windowsterminal": ("Windows Terminal", "terminal"),
+    "pwsh": ("PowerShell", "terminal"),
+    "powershell": ("PowerShell", "terminal"),
+    "cmd": ("命令提示符", "terminal"),
+}
 
 
 def origin_snapshot():
     """ps -axo pid=,ppid=,args → {pid: (ppid, args)}，供来源溯源。"""
     if IS_WINDOWS:
-        return {}
+        return {
+            pid: (info.get("ppid") or 0,
+                  info.get("args") or info.get("comm") or "")
+            for pid, info in _windows_process_snapshot().items()
+        }
     table = {}
     for line in run_cmd(["ps", "-axo", "pid=,ppid=,args"]).splitlines():
         toks = line.split(None, 2)
@@ -1053,8 +1639,16 @@ def attribute_origin(pid, table):
             label, icon = _ORIGIN_APP_ALIASES.get(
                 app_name.casefold(), (app_name, "package"))
             return {"label": label, "icon": icon}
-        base = os.path.basename(
-            parent_args.split()[0]).lstrip("-") if parent_args.split() else ""
+        try:
+            parent_tokens = shlex.split(parent_args, posix=not IS_WINDOWS)
+        except ValueError:
+            parent_tokens = parent_args.split()
+        executable = parent_tokens[0].strip('"') if parent_tokens else ""
+        base = os.path.splitext(
+            os.path.basename(executable).lstrip("-"))[0].casefold()
+        if IS_WINDOWS and base in _ORIGIN_WINDOWS_ALIASES:
+            label, icon = _ORIGIN_WINDOWS_ALIASES[base]
+            return {"label": label, "icon": icon}
         if base in _ORIGIN_MULTIPLEXERS:
             return {"label": _ORIGIN_MULTIPLEXERS[base], "icon": "terminal"}
         if base and base not in _ORIGIN_SKIP_NAMES and candidate is None:
@@ -1419,11 +2013,7 @@ def build_state(cfg, console_port, config_health=None):
             {"component": "version", "error": VERSION_LOAD_ERROR})
     for issue in (config_health or {}).get("issues", []):
         degraded_reasons.append({"component": "config", "error": issue})
-    if IS_WINDOWS:
-        degraded_reasons.append({
-            "component": "process-monitor",
-            "error": "Windows 进程与端口监控将在 Phase 2 启用",
-        })
+    degraded_reasons.extend(windows_monitor_errors())
     return {
         "services": services,
         "watched": watched,
@@ -1556,7 +2146,7 @@ def list_themes():
 def process_uid(pid):
     """返回进程 uid；进程不存在返回 None。"""
     if IS_WINDOWS:
-        return None
+        return _windows_process_identity(pid)
     out = run_cmd(["ps", "-o", "uid=", "-p", str(int(pid))])
     toks = out.split()
     if not toks:
@@ -1571,6 +2161,31 @@ def kill_process(pid, force):
     """结束单个进程；只允许当前用户的进程。返回 (ok, error)。"""
     if pid == SELF_PID:
         return False, "不能结束总控台自身进程"
+    if IS_WINDOWS:
+        try:
+            pid = int(pid)
+        except (TypeError, ValueError):
+            return False, "进程不存在"
+        handle = _KERNEL32.OpenProcess(
+            _PROCESS_TERMINATE | _PROCESS_QUERY_LIMITED_INFORMATION,
+            False, pid)
+        if not handle:
+            error = ctypes.get_last_error()
+            if error == 5:
+                return False, "只能结束当前用户的进程"
+            return False, "进程不存在"
+        try:
+            # 在持有终止句柄后再校验 SID，防止 PID 在校验/操作间复用。
+            if _windows_process_identity_from_handle(handle) != SELF_UID:
+                return False, "只能结束当前用户的进程"
+            if not _KERNEL32.TerminateProcess(handle, 1):
+                error = ctypes.get_last_error()
+                if error == 5:
+                    return False, "没有权限结束该进程"
+                return False, "结束失败: %s" % ctypes.WinError(error)
+            return True, None
+        finally:
+            _KERNEL32.CloseHandle(handle)
     uid = process_uid(pid)
     if uid is None:
         return False, "进程不存在"

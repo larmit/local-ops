@@ -603,7 +603,6 @@ class KillEndpointTests(unittest.TestCase):
         self.assertFalse(body["ok"])
         self.assertIn("不存在", body["error"])
 
-    @unittest.skipIf(server.IS_WINDOWS, "Windows 进程所有者与终止在 Phase 2/3 适配")
     def test_kill_sends_sigterm_to_owned_process(self):
         proc = subprocess.Popen(
             [sys.executable, "-c", "import time; time.sleep(30)"])
@@ -621,7 +620,6 @@ class KillEndpointTests(unittest.TestCase):
             if proc.poll() is None:
                 proc.kill()
 
-    @unittest.skipIf(server.IS_WINDOWS, "Windows 进程所有者与终止在 Phase 2/3 适配")
     def test_kill_force_sends_sigkill_to_sigterm_immune_process(self):
         code = ("import signal,time; signal.signal(signal.SIGTERM,"
                 " signal.SIG_IGN); time.sleep(30)")
