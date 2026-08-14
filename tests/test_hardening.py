@@ -208,6 +208,7 @@ class DeliveryMetadataTests(unittest.TestCase):
 
         self.assertEqual(status, 200)
         self.assertEqual(body["version"], server.APP_VERSION)
+        self.assertEqual(body["platform"], sys.platform)
         self.assertEqual(body["schemaVersion"],
                          server.CURRENT_SCHEMA_VERSION)
         self.assertTrue(body["degraded"])
@@ -324,6 +325,8 @@ class OperationLockTests(unittest.TestCase):
 
         with mock.patch.object(server, "app_alive_sign", return_value=False), \
                 mock.patch.object(server, "scan_listeners", return_value=set()), \
+                mock.patch.object(server, "inspect_app_health",
+                                  return_value={"blocking": False, "issues": []}), \
                 mock.patch.object(server, "start_app", side_effect=slow_start), \
                 mock.patch.object(server, "persist_started_app", return_value=True):
             thread = threading.Thread(target=first_request)
@@ -386,6 +389,7 @@ class OperationLockTests(unittest.TestCase):
         stop.assert_not_called()
 
 
+@unittest.skipIf(server.IS_WINDOWS, "Windows Job Object 生命周期在 Phase 3 适配")
 class ProcessLifecycleHardeningTests(unittest.TestCase):
     def _config_with_app(self, directory, app):
         path = os.path.join(directory, "config.json")
@@ -599,6 +603,7 @@ class KillEndpointTests(unittest.TestCase):
         self.assertFalse(body["ok"])
         self.assertIn("不存在", body["error"])
 
+    @unittest.skipIf(server.IS_WINDOWS, "Windows 进程所有者与终止在 Phase 2/3 适配")
     def test_kill_sends_sigterm_to_owned_process(self):
         proc = subprocess.Popen(
             [sys.executable, "-c", "import time; time.sleep(30)"])
@@ -616,6 +621,7 @@ class KillEndpointTests(unittest.TestCase):
             if proc.poll() is None:
                 proc.kill()
 
+    @unittest.skipIf(server.IS_WINDOWS, "Windows 进程所有者与终止在 Phase 2/3 适配")
     def test_kill_force_sends_sigkill_to_sigterm_immune_process(self):
         code = ("import signal,time; signal.signal(signal.SIGTERM,"
                 " signal.SIG_IGN); time.sleep(30)")

@@ -2,11 +2,15 @@
 
 **Preview / Alpha · 源码预览**
 
-总控台是一个面向 macOS 的本地服务与批处理任务快速启动、运行监测工具。它把常用项目命令、长期服务和一次性批处理任务集中到本地网页中，并用 Python 3 标准库提供只绑定回环地址的后端；前端是无构建、无 CDN 的原生 HTML/CSS/JavaScript。
+总控台是一个面向 macOS 和 Windows 的本地服务与批处理任务快速启动、运行监测工具。它把常用项目命令、长期服务和一次性批处理任务集中到本地网页中，并用 Python 3 标准库提供只绑定回环地址的后端；前端是无构建、无 CDN 的原生 HTML/CSS/JavaScript。
 
 > 当前版本仍处于 Preview / Alpha 阶段，以源码预览形式提供。接口、配置格式和安装方式仍可能调整；`总控台.app` 目前不是可单独复制的自包含应用，也尚不代表经过签名、公证的最终 macOS 发行版。
 
-总控台只服务当前 Mac 和当前用户，不是远程运维、多人协作或公网管理面板。它能够以当前用户权限执行保存的 shell 命令；不要将监听地址、反向代理、SSH 隧道或端口映射暴露到不受信任的网络。
+总控台只服务当前计算机和当前用户，不是远程运维、多人协作或公网管理面板。不要将监听地址、反向代理、SSH 隧道或端口映射暴露到不受信任的网络。
+
+### Windows 开发状态
+
+Windows 端已完成 Phase 1：可以用原生脚本启动完整 Web UI 和本地 API，支持 LocalAppData 数据/日志、配置读写、轻量健康检查、Windows 单实例 Mutex 和自身重启。当前进程/端口监控会明确显示为 Phase 2 降级项；受管应用启停与 Job Object 生命周期属于 Phase 3，Windows 脚本选择/命令适配属于 Phase 4。macOS 现有能力不受影响。
 
 ## 功能
 
@@ -29,9 +33,10 @@
 
 ## 系统要求
 
-- macOS 12 或更高版本。
-- Python 3.12。运行时仅使用 Python 标准库。
-- macOS 自带的 `ps`、`lsof`、`osascript` 等系统工具。
+- macOS 12 或更高版本，或 Windows 10/11 x64。
+- CPython 3.12 或更高版本。运行时仅使用 Python 标准库。
+- macOS 完整监控需要系统自带的 `ps`、`lsof`、`osascript` 等工具。
+- Windows Phase 1 启动需要 PowerShell 5.1 或 PowerShell 7。
 - Safari、Chrome 或其他支持 ES Modules 的现代浏览器。
 
 `VERSION` 是项目版本的唯一权威来源。`Info.plist`、发行包名和发行说明应与它保持一致。
@@ -39,6 +44,14 @@
 ## 安装
 
 总控台以完整项目目录运行，`总控台.app` 是项目内启动器，不是可以单独复制的自包含应用。
+
+### Windows
+
+1. 下载并解压完整项目目录。
+2. 安装 64 位 CPython 3.12 或更高版本。
+3. 双击 `start.cmd`，或在 PowerShell 运行 `.\start.ps1`。脚本会优先发现当前用户的 Python 3.12+，然后检查 `PATH` 中的 `python.exe`。
+
+### macOS
 
 1. **下载并解压**：将发行 zip 解压到一个你有读写权限的位置（如 `~/Applications` 或文稿下的固定目录）。解压后请保持目录结构完整，不要单独移动 `总控台.app`。
 2. **确认 Python 3.12**：在「终端」运行：
@@ -60,12 +73,14 @@
 
 ## 运行
 
-启动总控台有且只有三种方式，效果相同，按习惯选择：
+按平台选择启动方式：
 
 | 方式 | 操作 | 适用场景 |
 | --- | --- | --- |
 | 双击应用 | 双击 `总控台.app` | 日常使用。后台运行，无 Terminal 窗口和 Dock 图标 |
 | 双击脚本 | 双击 `start.command` | 想在 Terminal 里看实时输出 |
+| Windows 双击 | 双击 `start.cmd` | Windows 日常启动 |
+| Windows PowerShell | `.\start.ps1 --no-browser` | Windows 调试或只启动服务 |
 | 命令行 | `python3 server.py` | 调试、脚本化或远程 SSH 启动 |
 
 命令行还有两个可选参数：
@@ -77,7 +92,7 @@ python3 server.py --preferred-port 9603  # 在 9600-9609 内指定优先端口
 
 启动后程序只绑定 `127.0.0.1`，从 9600 起尝试端口，被占用则递增（最多 10 个），并自动打开浏览器。命令行参数、环境变量（`CONSOLE_DATA_DIR` / `CONSOLE_LOG_DIR`）见下文“数据、隐私与备份”。
 
-**实际地址在哪里看**：顶栏「重启 :9600」按钮上直接显示当前端口；或看终端输出 / `~/Library/Logs/总控台/console.log`。浏览器手动访问 `http://127.0.0.1:端口号/` 即可。
+**实际地址在哪里看**：顶栏「重启 :9600」按钮上直接显示当前端口；或看终端输出。macOS 日志在 `~/Library/Logs/总控台/console.log`，Windows 日志在 `%LOCALAPPDATA%\LocalOps\Logs\console.log`。浏览器手动访问 `http://127.0.0.1:端口号/` 即可。
 
 **停止与重启**：顶栏「重启 / 停止」控制的是总控台自身（网页服务）。停止总控台**不会**停止启动台里已经运行的应用——它们是独立进程组，会继续运行；下次打开总控台时会自动重新识别。重启总控台会加载磁盘上的最新代码，同样不影响运行中的应用。
 
@@ -130,7 +145,7 @@ python3 server.py --preferred-port 9603  # 在 9600-9609 内指定优先端口
 
 ## 数据、隐私与备份
 
-运行数据与程序目录分离，默认放在 macOS 用户资料库：
+运行数据与程序目录分离：
 
 | 路径 | 内容 | 备份建议 |
 | --- | --- | --- |
@@ -138,8 +153,11 @@ python3 server.py --preferred-port 9603  # 在 9600-9609 内指定优先端口
 | `~/Library/Application Support/总控台/config.json.bak` | 上一份已知良好的配置 | 必须 |
 | `~/Library/Application Support/总控台/icons/` | 用户上传的图标和站点图标 | 按需 |
 | `~/Library/Logs/总控台/` | 应用与总控台运行日志 | 通常不需 |
+| `%LOCALAPPDATA%\LocalOps\config.json{,.bak}` | Windows 配置与备份 | 必须 |
+| `%LOCALAPPDATA%\LocalOps\icons\` | Windows 用户图标 | 按需 |
+| `%LOCALAPPDATA%\LocalOps\Logs\` | Windows 运行日志 | 通常不需 |
 
-目录权限会收紧为 `0700`，配置、图标和日志文件为 `0600`。这些文件仍可能含个人路径、完整 shell 命令和日志内容；不应进入 Git，也不应随发行包或故障报告对外传播。
+macOS 目录权限会收紧为 `0700`，配置、图标和日志文件为 `0600`。Windows 使用 LocalAppData 目录继承的当前用户 ACL，不伪造 POSIX mode。这些文件仍可能含个人路径、完整命令和日志内容；不应进入 Git，也不应随发行包或故障报告对外传播。
 
 ### 旧版数据首次迁移
 

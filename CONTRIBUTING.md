@@ -11,7 +11,7 @@
 
 ## 开发环境
 
-- macOS 12 或更高版本；
+- macOS 12+，或 Windows 10/11 x64；
 - Python 3.12；
 - Node.js，仅用于 JavaScript 语法检查；
 - 运行时无第三方 Python 依赖。

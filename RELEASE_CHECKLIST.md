@@ -73,11 +73,19 @@
 - [ ] 在未安装开发工具、不存在旧 `data/` 的目标 macOS 版本上完成全新安装。
 - [ ] 如果交付声称“独立 App”，发行包已捆绑 Python 和所有必要文件，单独复制 `.app` 也能运行。
 - [ ] 如果仍是“完整项目目录”交付，README 和安装界面已明确说明 Python 3.12 和目录关系。
+
+## 7. Windows Phase 1
+
+- [ ] Windows 10/11 x64 上 `start.cmd` 和 `start.ps1` 均能发现 CPython 3.12+ 并启动。
+- [ ] 默认数据/日志位于 `%LOCALAPPDATA%\LocalOps`，且不写入项目目录。
+- [ ] 同一数据目录的第二个实例被 Win32 Mutex 拒绝。
+- [ ] `GET /api/health` 返回 Windows 平台信息，`GET /api/state` 显式标记 Phase 2 进程监控降级。
+- [ ] Windows CI 完成 Python/JavaScript 测试、PowerShell 语法检查和发行包验证。
 - [ ] 缺少或版本不符的 Python 会显示可理解、可操作的错误，不会静默退出。
 - [ ] App 具有正确的 bundle id、版本、build 号、最低系统版本和图标。
 - [ ] 对外分发包已使用 Developer ID 签名、提交公证并完成 Gatekeeper 验证。
 
-## 7. 许可、隐私与发行包内容
+## 8. 许可、隐私与发行包内容
 
 - [ ] `THIRD_PARTY_NOTICES.md` 中每一项的来源、版本、版权和许可与实际文件相符。
 - [ ] `ASSET_PROVENANCE.md` 已覆盖发行范围内的全部字体、Logo、favicon、App Icon、插画和生成纹理，当前文件 SHA-256 与台账一致。
@@ -90,7 +98,7 @@
 - [ ] README、Issue/PR 模板、示例 JSON、截图和录屏中的用户名、主目录和真实服务信息均已脱敏。
 - [ ] 用解压后的最终产物而不是开发工作区完成了验收。
 
-## 8. 交付与回滚凭证
+## 9. 交付与回滚凭证
 
 - [ ] 生成发行包 SHA-256：`________________________________________`
 - [ ] 发行包字节数：`____________`

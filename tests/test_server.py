@@ -26,14 +26,18 @@ class ParsingTests(unittest.TestCase):
         self.assertIsNotNone(server.validate_port(True)[1])
         self.assertIsNotNone(server.validate_port(70000)[1])
 
+    @unittest.skipUnless(server.IS_WINDOWS, "Win32 进程存活检查")
+    def test_windows_pid_alive_uses_process_handle(self):
+        self.assertTrue(server.pid_alive(os.getpid()))
+        self.assertFalse(server.pid_alive(99_999_999))
+
     def test_listener_scan_preserves_ipv6_loopback_for_open_links(self):
         output = """COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME
 node 101 user 1u IPv6 0x0 0t0 TCP [::1]:5173 (LISTEN)
 node 202 user 2u IPv4 0x0 0t0 TCP 127.0.0.1:8000 (LISTEN)
 node 303 user 3u IPv6 0x0 0t0 TCP *:3000 (LISTEN)
 """
-        with mock.patch.object(server, "run_cmd", return_value=output):
-            listeners = server.scan_listeners()
+        listeners = server.parse_lsof_listeners(output)
 
         self.assertEqual(listeners[(101, 5173)], {"::1"})
         self.assertEqual(
@@ -127,6 +131,7 @@ class OriginAttributionTests(unittest.TestCase):
         self.assertEqual(origin, {"label": "Claude Code", "icon": "bot"})
 
 
+@unittest.skipIf(server.IS_WINDOWS, "POSIX 脚本命令在 Windows Phase 4 适配")
 class ScriptCommandTests(unittest.TestCase):
     def test_script_extensions_choose_the_expected_runtime_and_quote_paths(self):
         cases = {
@@ -185,14 +190,16 @@ class AppHealthTests(unittest.TestCase):
             path = os.path.join(td, "job.sh")
             with open(path, "w", encoding="utf-8") as handle:
                 handle.write("echo ok\n")
-            app = {"command": "/bin/bash -- job.sh", "cwd": td}
-            self.assertFalse(server.inspect_app_health(app)["blocking"])
+            app = {"command": "bash -- job.sh", "cwd": td}
+            with mock.patch.object(server.shutil, "which", return_value="/bin/bash"):
+                self.assertFalse(server.inspect_app_health(app)["blocking"])
 
     def test_missing_cwd_does_not_cascade_for_relative_script(self):
         with tempfile.TemporaryDirectory() as td:
             missing = os.path.join(td, "gone")
-            health = server.inspect_app_health({
-                "command": "/bin/bash -- job.sh", "cwd": missing})
+            with mock.patch.object(server.shutil, "which", return_value="/bin/bash"):
+                health = server.inspect_app_health({
+                    "command": "bash -- job.sh", "cwd": missing})
         self.assertEqual([item["kind"] for item in health["issues"]],
                          ["cwd-missing"])
 
@@ -218,6 +225,7 @@ class AppHealthTests(unittest.TestCase):
                 {"command": "definitely-not-installed --version", "cwd": None})
         self.assertEqual(health["issues"][0]["kind"], "runtime-missing")
 
+    @unittest.skipIf(server.IS_WINDOWS, "Windows 不使用 POSIX 执行位")
     def test_direct_script_requires_execute_permission_but_bash_script_does_not(self):
         with tempfile.TemporaryDirectory() as td:
             path = os.path.join(td, "job.command")
@@ -239,6 +247,7 @@ class AppHealthTests(unittest.TestCase):
                 {"command": server.command_for_script(link), "cwd": td})
         self.assertEqual(health["issues"][0]["kind"], "script-missing")
 
+    @unittest.skipIf(server.IS_WINDOWS, "Windows 受管任务启停在 Phase 3 适配")
     def test_task_cancel_exit_code_survives_shell_wrapper(self):
         with tempfile.TemporaryDirectory() as td, \
                 mock.patch.object(server, "LOGS_DIR", td):
@@ -374,9 +383,10 @@ class ConfigTests(unittest.TestCase):
                 backup = json.load(f)
             self.assertEqual(current["watchedKeywords"], ["node", "ffmpeg"])
             self.assertEqual(backup["watchedKeywords"], ["node"])
-            self.assertEqual(oct(os.stat(path).st_mode & 0o777), "0o600")
-            self.assertEqual(oct(os.stat(path + ".bak").st_mode & 0o777),
-                             "0o600")
+            if not server.IS_WINDOWS:
+                self.assertEqual(oct(os.stat(path).st_mode & 0o777), "0o600")
+                self.assertEqual(oct(os.stat(path + ".bak").st_mode & 0o777),
+                                 "0o600")
 
     def test_load_falls_back_to_backup(self):
         with tempfile.TemporaryDirectory() as td:
@@ -444,6 +454,21 @@ class ConfigTests(unittest.TestCase):
 
 
 class RuntimeStorageTests(unittest.TestCase):
+    def test_platform_default_runtime_directories(self):
+        windows_data, windows_logs = server.platform_default_runtime_dirs(
+            "win32", {"LOCALAPPDATA": r"C:\Users\example\AppData\Local"},
+            r"C:\Users\example")
+        self.assertEqual(windows_data,
+                         r"C:\Users\example\AppData\Local\LocalOps")
+        self.assertEqual(windows_logs,
+                         r"C:\Users\example\AppData\Local\LocalOps\Logs")
+
+        mac_data, mac_logs = server.platform_default_runtime_dirs(
+            "darwin", {}, "/Users/example")
+        self.assertEqual(mac_data,
+                         "/Users/example/Library/Application Support/总控台")
+        self.assertEqual(mac_logs, "/Users/example/Library/Logs/总控台")
+
     def test_runtime_override_requires_a_dedicated_absolute_directory(self):
         with mock.patch.dict(os.environ, {"TEST_CONSOLE_DIR": ""}):
             with self.assertRaises(RuntimeError):
@@ -483,10 +508,11 @@ class RuntimeStorageTests(unittest.TestCase):
             with open(os.path.join(logs, "deadbeef.log"), "rb") as f:
                 self.assertEqual(f.read(), b"log")
             self.assertTrue(os.path.isfile(os.path.join(legacy, "config.json")))
-            self.assertEqual(oct(os.stat(target).st_mode & 0o777), "0o700")
-            self.assertEqual(
-                oct(os.stat(os.path.join(target, "config.json")).st_mode & 0o777),
-                "0o600")
+            if not server.IS_WINDOWS:
+                self.assertEqual(oct(os.stat(target).st_mode & 0o777), "0o700")
+                self.assertEqual(
+                    oct(os.stat(os.path.join(target, "config.json")).st_mode & 0o777),
+                    "0o600")
 
             # 已存在的目标绝不被旧项目目录二次覆盖。
             with open(os.path.join(legacy, "config.json"), "w",
@@ -573,10 +599,18 @@ class RuntimeStorageTests(unittest.TestCase):
             log_path = os.path.join(logs, "console.log")
             with open(log_path, encoding="utf-8") as f:
                 self.assertEqual(f.read(), "launcher-log-ready\n")
-            self.assertEqual(os.stat(log_path).st_mode & 0o777, 0o600)
+            if not server.IS_WINDOWS:
+                self.assertEqual(os.stat(log_path).st_mode & 0o777, 0o600)
 
 
 class ProcessIdentityTests(unittest.TestCase):
+    @unittest.skipUnless(server.IS_WINDOWS, "Windows Phase 1 显式生命周期边界")
+    def test_windows_phase_one_rejects_managed_start_explicitly(self):
+        ok, error, proc, pgid, token = server.start_app({"id": "deadbeef"})
+        self.assertFalse(ok)
+        self.assertIn("Phase 3", error)
+        self.assertEqual((proc, pgid, token), (None, None, None))
+
     def test_random_marker_is_required_for_whole_process_group(self):
         app = {"id": "a", "lastPid": 42, "lastPgid": 42, "runToken": "right"}
         groups = {42: [42, 43]}
@@ -591,6 +625,7 @@ class ProcessIdentityTests(unittest.TestCase):
             index, _, _ = server.managed_process_index([stale], groups)
             self.assertEqual(index["a"], [])
 
+    @unittest.skipIf(server.IS_WINDOWS, "Windows Job Object 生命周期在 Phase 3 适配")
     def test_real_started_process_is_identified_and_stoppable(self):
         with tempfile.TemporaryDirectory() as td, \
                 mock.patch.object(server, "LOGS_DIR", td):
@@ -805,6 +840,7 @@ class ProcessIdentityTests(unittest.TestCase):
 
 
 class LaunchEnvironmentTests(unittest.TestCase):
+    @unittest.skipIf(server.IS_WINDOWS, "macOS 无终端启动 PATH 合同")
     def test_headless_launch_path_includes_common_user_node_locations(self):
         with mock.patch.object(server.os.path, "expanduser", return_value="/Users/example"), \
                 mock.patch.object(server.glob, "glob", side_effect=[
@@ -1038,6 +1074,19 @@ class IconTests(unittest.TestCase):
 
 
 class ConsoleRestartTests(unittest.TestCase):
+    def test_http_instance_discovery_accepts_only_console_health_shape(self):
+        invalid = mock.MagicMock()
+        invalid.__enter__.return_value.status = 200
+        invalid.__enter__.return_value.read.return_value = b'{"ok":true}'
+        valid = mock.MagicMock()
+        valid.__enter__.return_value.status = 200
+        valid.__enter__.return_value.read.return_value = (
+            b'{"version":"1.0.0","schemaVersion":1}')
+        with mock.patch.object(server.urllib.request, "urlopen",
+                               side_effect=[invalid, valid]):
+            ports = server.find_console_http_ports([9600, 9601])
+        self.assertEqual(ports, [9601])
+
     def test_instance_discovery_is_limited_to_same_project(self):
         snap = {
             71001: {"uid": server.SELF_UID, "args": "python3 server.py",

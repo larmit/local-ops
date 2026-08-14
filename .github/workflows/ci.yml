@@ -9,6 +9,45 @@ permissions:
   contents: read
 
 jobs:
+  windows-check:
+    name: Windows check
+    runs-on: windows-2025
+    timeout-minutes: 20
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      SOURCE_DATE_EPOCH: "1704067200"
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Show toolchain
+        run: |
+          python --version
+          node --version
+
+      - name: Run Windows project checks
+        run: python tools/check_project.py
+
+      - name: Exercise Windows launcher storage setup
+        shell: pwsh
+        env:
+          CONSOLE_DATA_DIR: ${{ runner.temp }}\local-ops-data
+          CONSOLE_LOG_DIR: ${{ runner.temp }}\local-ops-logs
+        run: .\start.ps1 --prepare-storage
+
+      - name: Build and verify release
+        run: |
+          python tools/build_release.py
+          python tools/build_release.py --verify-only
+
   check-and-release:
     name: Check and release audit
     runs-on: macos-15

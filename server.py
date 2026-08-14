@@ -8,12 +8,14 @@ API 契约与实现要点见 AGENTS.md。
 """
 
 import glob
-import fcntl
 import functools
 import errno
+import hashlib
 import json
 import logging
+import ntpath
 import os
+import posixpath
 import re
 import secrets
 import shlex
@@ -31,12 +33,38 @@ import webbrowser
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+IS_WINDOWS = os.name == "nt"
+
+if IS_WINDOWS:
+    import ctypes
+    from ctypes import wintypes
+else:
+    import fcntl
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 VERSION_PATH = os.path.join(BASE_DIR, "VERSION")
 LEGACY_DATA_DIR = os.path.join(BASE_DIR, "data")
-DEFAULT_DATA_DIR = os.path.expanduser(
-    "~/Library/Application Support/总控台")
-DEFAULT_LOGS_DIR = os.path.expanduser("~/Library/Logs/总控台")
+
+
+def platform_default_runtime_dirs(platform_name=None, environ=None, home=None):
+    """返回当前平台的默认数据/日志目录，不创建任何文件。"""
+    platform_name = sys.platform if platform_name is None else platform_name
+    environ = os.environ if environ is None else environ
+    home = os.path.expanduser("~") if home is None else home
+    if str(platform_name).startswith("win"):
+        local_app_data = (environ.get("LOCALAPPDATA") or "").strip()
+        if not local_app_data or not ntpath.isabs(local_app_data):
+            local_app_data = ntpath.join(home, "AppData", "Local")
+        data_dir = ntpath.abspath(ntpath.join(local_app_data, "LocalOps"))
+        return data_dir, ntpath.join(data_dir, "Logs")
+    return (
+        posixpath.abspath(posixpath.join(
+            home, "Library", "Application Support", "总控台")),
+        posixpath.abspath(posixpath.join(home, "Library", "Logs", "总控台")),
+    )
+
+
+DEFAULT_DATA_DIR, DEFAULT_LOGS_DIR = platform_default_runtime_dirs()
 
 
 def resolve_runtime_dir(name, default):
@@ -106,7 +134,9 @@ RUN_TOKEN_ARG_PREFIX = "console-run:"
 TASK_CANCELED_EXIT_CODE = 130
 
 SELF_PID = os.getpid()
-SELF_UID = os.getuid()
+# Windows 没有 POSIX UID；Phase 2 的进程适配器会用访问令牌 SID 做同用户校验。
+# 这里保留整数兼容字段，使 HTTP/配置层可先在 Windows 安全启动。
+SELF_UID = os.getuid() if hasattr(os, "getuid") else 0
 ICON_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".ico")
 LOG = logging.getLogger("console")
 LOG_LOCK = threading.RLock()
@@ -176,6 +206,18 @@ APP_ROUTE_RE = re.compile(
 
 # ---------------------------------------------------------------- 运行目录
 
+def _set_private_path_mode(path, mode):
+    """POSIX 收紧 mode；Windows 依赖当前用户 LocalAppData 的继承 ACL。"""
+    if not IS_WINDOWS:
+        os.chmod(path, mode)
+
+
+def _set_private_fd_mode(fd, mode):
+    """文件描述符版权限收紧；Windows 没有可靠的 POSIX mode 语义。"""
+    if not IS_WINDOWS:
+        os.fchmod(fd, mode)
+
+
 def _ensure_private_dir(path):
     if os.path.islink(path):
         raise OSError("私有运行目录不能是符号链接: %s" % path)
@@ -183,7 +225,7 @@ def _ensure_private_dir(path):
     if os.path.islink(path) or not os.path.isdir(path):
         raise OSError("私有运行路径不是安全目录: %s" % path)
     try:
-        os.chmod(path, 0o700)
+        _set_private_path_mode(path, 0o700)
     except OSError:
         LOG.warning("无法收紧目录权限: %s", path)
 
@@ -213,7 +255,7 @@ def _copy_private_regular_file(source, target):
                 os.close(target_fd)
     finally:
         os.close(source_fd)
-    os.chmod(target, 0o600)
+    _set_private_path_mode(target, 0o600)
     return True
 
 
@@ -228,7 +270,7 @@ def _install_migrated_directory(target, populate):
     staging = tempfile.mkdtemp(prefix=".console-migration-", dir=parent)
     installed = False
     try:
-        os.chmod(staging, 0o700)
+        _set_private_path_mode(staging, 0o700)
         populate(staging)
         try:
             os.rename(staging, target)
@@ -305,7 +347,7 @@ def prepare_runtime_storage():
     for path in (CONFIG_PATH, CONFIG_PATH + ".bak", INSTANCE_LOCK_PATH):
         try:
             if stat.S_ISREG(os.lstat(path).st_mode):
-                os.chmod(path, 0o600)
+                _set_private_path_mode(path, 0o600)
         except OSError:
             pass
     for directory in (ICONS_DIR, LOGS_DIR):
@@ -317,7 +359,7 @@ def prepare_runtime_storage():
             for entry in entries:
                 try:
                     if entry.is_file(follow_symlinks=False):
-                        os.chmod(entry.path, 0o600)
+                        _set_private_path_mode(entry.path, 0o600)
                 except OSError:
                     LOG.warning("无法收紧文件权限: %s", entry.path)
     return migration
@@ -330,7 +372,7 @@ def write_private_bytes(path, payload):
         f.write(payload)
         f.flush()
         os.fsync(f.fileno())
-    os.chmod(path, 0o600)
+    _set_private_path_mode(path, 0o600)
 
 
 # ---------------------------------------------------------------- 配置
@@ -532,18 +574,57 @@ class Config:
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, path)
-        os.chmod(path, 0o600)
+        _set_private_path_mode(path, 0o600)
+
+
+class _WindowsInstanceLock:
+    """保持命名 Mutex 与可诊断锁文件存活。"""
+
+    def __init__(self, handle, lock_file):
+        self.handle = handle
+        self.lock_file = lock_file
+
+
+def _acquire_windows_instance_lock(path):
+    normalized = os.path.normcase(os.path.realpath(os.path.abspath(path)))
+    digest = hashlib.sha256(
+        normalized.encode("utf-8", errors="surrogatepass")).hexdigest()[:32]
+    mutex_name = "Local\\LocalOps-" + digest
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateMutexW.argtypes = (
+        wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR)
+    kernel32.CreateMutexW.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    ctypes.set_last_error(0)
+    handle = kernel32.CreateMutexW(None, False, mutex_name)
+    if not handle:
+        raise ctypes.WinError(ctypes.get_last_error())
+    if ctypes.get_last_error() == 183:  # ERROR_ALREADY_EXISTS
+        kernel32.CloseHandle(handle)
+        return None
+    try:
+        lock_file = open(path, "w+", encoding="ascii", newline="\n")
+        lock_file.write("%d\n" % SELF_PID)
+        lock_file.flush()
+        os.fsync(lock_file.fileno())
+    except Exception:
+        kernel32.CloseHandle(handle)
+        raise
+    return _WindowsInstanceLock(handle, lock_file)
 
 
 def acquire_instance_lock(path=INSTANCE_LOCK_PATH):
     """Acquire the per-project process lock and keep its file object alive.
 
     Port fallback alone is not a single-instance guarantee: two servers on
-    :9600/:9601 would still update the same config.  flock ties exclusivity to
-    this data directory and is released automatically if the process crashes.
+    :9600/:9601 would still update the same config. POSIX 使用 flock；Windows
+    使用由数据目录派生名称的 per-session Mutex。进程崩溃时系统自动释放。
     """
     directory = os.path.dirname(path) or "."
     os.makedirs(directory, mode=0o700, exist_ok=True)
+    if IS_WINDOWS:
+        return _acquire_windows_instance_lock(path)
     fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
     lock_file = os.fdopen(fd, "r+", encoding="ascii")
     try:
@@ -554,7 +635,7 @@ def acquire_instance_lock(path=INSTANCE_LOCK_PATH):
             return None
         raise
     try:
-        os.fchmod(lock_file.fileno(), 0o600)
+        _set_private_fd_mode(lock_file.fileno(), 0o600)
         lock_file.seek(0)
         lock_file.truncate()
         lock_file.write("%d\n" % SELF_PID)
@@ -569,6 +650,15 @@ def acquire_instance_lock(path=INSTANCE_LOCK_PATH):
 
 def release_instance_lock(lock_file):
     if lock_file is None:
+        return
+    if IS_WINDOWS:
+        try:
+            lock_file.lock_file.close()
+        finally:
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+            kernel32.CloseHandle.restype = wintypes.BOOL
+            kernel32.CloseHandle(lock_file.handle)
         return
     try:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
@@ -616,15 +706,10 @@ def _to_float(tok, default=0.0):
         return default
 
 
-def scan_listeners():
-    """lsof 监听快照 → {(pid, port): {bind_host, ...}}。
-
-    字典仍可像旧集合一样迭代/判断 ``(pid, port)``，同时保留监听地址，
-    供前端区分仅监听 ``::1`` 的服务（需通过 localhost 打开）。
-    """
-    out = run_cmd(["lsof", "-iTCP", "-sTCP:LISTEN", "-P", "-n"])
+def parse_lsof_listeners(output):
+    """解析 lsof 监听输出，不访问操作系统。"""
     found = {}
-    for line in out.splitlines():
+    for line in output.splitlines():
         if not line or line.startswith("COMMAND"):
             continue
         parts = line.split()
@@ -649,6 +734,19 @@ def scan_listeners():
             continue
         found.setdefault((pid, port), set()).add(bind_host or "")
     return found
+
+
+def scan_listeners():
+    """lsof 监听快照 → {(pid, port): {bind_host, ...}}。
+
+    字典仍可像旧集合一样迭代/判断 ``(pid, port)``，同时保留监听地址，
+    供前端区分仅监听 ``::1`` 的服务（需通过 localhost 打开）。
+    """
+    if IS_WINDOWS:
+        # Phase 2 接入 Windows 端口/进程监控；Phase 1 避免轮询 POSIX 工具报错。
+        return {}
+    out = run_cmd(["lsof", "-iTCP", "-sTCP:LISTEN", "-P", "-n"])
+    return parse_lsof_listeners(out)
 
 
 def listener_open_host(listeners, port, pids=None):
@@ -687,6 +785,8 @@ def ps_snapshot(pids=None, with_uid=True):
     注意：不能用 `comm=` 抑制表头——macOS ps 会把空表头列压到 16 字节截断
     内容；保留表头后解析时跳过表头行即可（首列非数字的行）。
     """
+    if IS_WINDOWS:
+        return {}
     base = ["ps"]
     if pids is None:
         base.append("-ax")
@@ -740,6 +840,8 @@ def ps_snapshot(pids=None, with_uid=True):
 
 def lsof_cwds(pids):
     """lsof -a -p <pids> -d cwd -Fn → {pid: cwd}。"""
+    if IS_WINDOWS:
+        return {}
     pids = [int(p) for p in pids]
     if not pids:
         return {}
@@ -759,6 +861,33 @@ def lsof_cwds(pids):
 
 
 def pid_alive(pid):
+    if IS_WINDOWS:
+        try:
+            pid = int(pid)
+        except (ValueError, TypeError):
+            return False
+        if pid <= 0:
+            return False
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = (
+            wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.GetExitCodeProcess.argtypes = (
+            wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+        kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        ctypes.set_last_error(0)
+        handle = kernel32.OpenProcess(0x1000, False, pid)
+        if not handle:
+            return ctypes.get_last_error() == 5  # ERROR_ACCESS_DENIED
+        try:
+            exit_code = wintypes.DWORD()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return True
+            return exit_code.value == 259  # STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
     try:
         os.kill(int(pid), 0)
         return True
@@ -876,6 +1005,8 @@ _ORIGIN_MULTIPLEXERS = {"tmux": "tmux", "screen": "screen"}
 
 def origin_snapshot():
     """ps -axo pid=,ppid=,args → {pid: (ppid, args)}，供来源溯源。"""
+    if IS_WINDOWS:
+        return {}
     table = {}
     for line in run_cmd(["ps", "-axo", "pid=,ppid=,args"]).splitlines():
         toks = line.split(None, 2)
@@ -1024,6 +1155,8 @@ def pgid_members_map():
     """ps -axo pid=,pgid= → {pgid: [pid, ...]}。
     进程退出后其子孙仍保留原 pgid（被 launchd 收养也不变），
     因此按 pgid 能找到「脚本把服务放后台后自己退出」的存活成员。"""
+    if IS_WINDOWS:
+        return {}
     groups = {}
     for line in run_cmd(["ps", "-axo", "pid=,pgid="]).splitlines():
         parts = line.split()
@@ -1286,6 +1419,11 @@ def build_state(cfg, console_port, config_health=None):
             {"component": "version", "error": VERSION_LOAD_ERROR})
     for issue in (config_health or {}).get("issues", []):
         degraded_reasons.append({"component": "config", "error": issue})
+    if IS_WINDOWS:
+        degraded_reasons.append({
+            "component": "process-monitor",
+            "error": "Windows 进程与端口监控将在 Phase 2 启用",
+        })
     return {
         "services": services,
         "watched": watched,
@@ -1294,6 +1432,7 @@ def build_state(cfg, console_port, config_health=None):
         "consolePort": console_port,
         "consolePid": SELF_PID,
         "consoleCwd": BASE_DIR,
+        "platform": sys.platform,
         "version": APP_VERSION,
         "schemaVersion": cfg.get("schemaVersion", CURRENT_SCHEMA_VERSION),
         "degraded": bool(degraded_reasons),
@@ -1331,7 +1470,7 @@ def get_state_snapshot(cfg, console_port):
 
 
 def build_health(cfg):
-    """不执行 ps/lsof 的轻量健康检查。"""
+    """不执行进程扫描的轻量健康检查。"""
     health = cfg.health_info()
     issues = list(health.get("issues") or [])
     if VERSION_LOAD_ERROR:
@@ -1345,7 +1484,9 @@ def build_health(cfg):
         else:
             try:
                 mode = os.lstat(path).st_mode
-                if stat.S_ISLNK(mode) or mode & 0o077:
+                if stat.S_ISLNK(mode):
+                    issues.append("%s 目录不能是符号链接" % label)
+                elif not IS_WINDOWS and mode & 0o077:
                     issues.append("%s 目录权限不是 0700" % label)
             except OSError as e:
                 issues.append("无法检查 %s 目录: %s" % (label, e))
@@ -1360,7 +1501,9 @@ def build_health(cfg):
         except OSError as e:
             issues.append("无法检查 %s: %s" % (label, e))
             continue
-        if not stat.S_ISREG(mode) or mode & 0o077:
+        if not stat.S_ISREG(mode):
+            issues.append("%s 不是普通文件" % label)
+        elif not IS_WINDOWS and mode & 0o077:
             issues.append("%s 文件权限不是 0600" % label)
     degraded = bool(issues)
     snapshot = cfg.snapshot()
@@ -1368,6 +1511,7 @@ def build_health(cfg):
         "ok": not degraded,
         "status": "degraded" if degraded else "ok",
         "version": APP_VERSION,
+        "platform": sys.platform,
         "schemaVersion": snapshot.get(
             "schemaVersion", CURRENT_SCHEMA_VERSION),
         "degraded": degraded,
@@ -1411,6 +1555,8 @@ def list_themes():
 
 def process_uid(pid):
     """返回进程 uid；进程不存在返回 None。"""
+    if IS_WINDOWS:
+        return None
     out = run_cmd(["ps", "-o", "uid=", "-p", str(int(pid))])
     toks = out.split()
     if not toks:
@@ -1505,6 +1651,9 @@ def build_launch_env(token, environ=None):
 
 def start_app(app):
     """返回 (ok, error, proc|None, pgid|None, token|None)。"""
+    if IS_WINDOWS:
+        return (False, "Windows 受管应用启停将在 Phase 3 启用",
+                None, None, None)
     _ensure_private_dir(LOGS_DIR)
     log_path = os.path.join(LOGS_DIR, "%s.log" % app["id"])
     rotate_log_file(log_path)
@@ -1512,7 +1661,7 @@ def start_app(app):
     try:
         log_fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND,
                          0o600)
-        os.fchmod(log_fd, 0o600)
+        _set_private_fd_mode(log_fd, 0o600)
         logf = os.fdopen(log_fd, "ab", buffering=0)
     except OSError as e:
         return False, "无法打开日志文件: %s" % e, None, None, None
@@ -2352,10 +2501,10 @@ def rotate_log_file(path, max_bytes=MAX_LOG_BYTES, backups=LOG_BACKUPS):
                 if os.path.exists(older):
                     os.replace(older, newer)
             shutil.copyfile(path, path + ".1")
-            os.chmod(path + ".1", 0o600)
+            _set_private_path_mode(path + ".1", 0o600)
             with open(path, "r+b") as f:
                 f.truncate(0)
-            os.chmod(path, 0o600)
+            _set_private_path_mode(path, 0o600)
             return True
         except OSError:
             LOG.exception("轮转日志失败: %s", path)
@@ -3848,6 +3997,31 @@ def find_console_instances():
     return sorted(result, key=lambda item: (item["ports"] or [65536], item["pid"]))
 
 
+def find_console_http_ports(ports=None):
+    """不依赖进程扫描地探测本机总控台端口。
+
+    Windows Phase 1 在单实例锁已存在时用它打开旧实例；
+    只发送无副作用的回环 GET，不信任或操作其他本地服务。
+    """
+    candidates = (range(PORT_START, PORT_START + PORT_TRIES)
+                  if ports is None else ports)
+    found = []
+    for port in candidates:
+        try:
+            url = "http://%s:%d/api/health" % (HOST, int(port))
+            with urllib.request.urlopen(url, timeout=0.35) as response:
+                if getattr(response, "status", 200) != 200:
+                    continue
+                payload = json.loads(response.read(16 * 1024).decode("utf-8"))
+            if (isinstance(payload, dict)
+                    and isinstance(payload.get("version"), str)
+                    and isinstance(payload.get("schemaVersion"), int)):
+                found.append(int(port))
+        except Exception:
+            continue
+    return sorted(set(found))
+
+
 def _launcher_dialog(message):
     script = """on run argv
 set messageText to item 1 of argv
@@ -3926,10 +4100,14 @@ def launcher_main():
 
 def schedule_console_restart(server, preferred_port):
     """启动独立 helper，响应发出后关闭当前 HTTP 服务。"""
+    popen_kwargs = {"cwd": BASE_DIR, "close_fds": True}
+    if IS_WINDOWS:
+        popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        popen_kwargs["start_new_session"] = True
     helper = subprocess.Popen(
         [sys.executable, os.path.abspath(__file__), "--restart-helper",
-         str(SELF_PID), str(int(preferred_port))],
-        cwd=BASE_DIR, start_new_session=True, close_fds=True)
+         str(SELF_PID), str(int(preferred_port))], **popen_kwargs)
 
     def _shutdown():
         time.sleep(0.25)
@@ -3947,7 +4125,7 @@ def schedule_console_stop(server):
 
 
 def restart_helper(old_pid, preferred_port):
-    """等旧进程释放端口后，在 helper 原地 exec 新总控台。"""
+    """等旧进程释放端口后启动新总控台。"""
     deadline = time.monotonic() + 12.0
     while time.monotonic() < deadline and pid_alive(old_pid):
         time.sleep(0.1)
@@ -3955,6 +4133,11 @@ def restart_helper(old_pid, preferred_port):
         return 1
     args = [sys.executable, os.path.abspath(__file__),
             "--preferred-port", str(int(preferred_port)), "--no-browser"]
+    if IS_WINDOWS:
+        child = subprocess.Popen(
+            args, cwd=BASE_DIR, close_fds=True,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+        return 0 if child.pid else 1
     os.execv(sys.executable, args)
     return 0
 
@@ -3998,11 +4181,11 @@ def _run_console(preferred_port=None, open_browser=True):
 
 
 def redirect_console_output():
-    """在运行目录迁移完成后，将 .app 输出安全追加到 Library Logs。"""
+    """在运行目录准备完成后，将输出安全追加到日志。"""
     path = os.path.join(LOGS_DIR, "console.log")
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     try:
-        os.fchmod(fd, 0o600)
+        _set_private_fd_mode(fd, 0o600)
         for stream in (sys.stdout, sys.stderr):
             try:
                 stream.flush()
@@ -4010,6 +4193,11 @@ def redirect_console_output():
                 pass
         os.dup2(fd, 1)
         os.dup2(fd, 2)
+        if IS_WINDOWS:
+            # TextIOWrapper 已会将 \n 转成 CRLF；避免 CRT 文本模式再转换一次。
+            import msvcrt
+            msvcrt.setmode(1, os.O_BINARY)
+            msvcrt.setmode(2, os.O_BINARY)
     finally:
         os.close(fd)
     for stream in (sys.stdout, sys.stderr):
@@ -4036,6 +4224,8 @@ def main(preferred_port=None, open_browser=True, log_to_file=False):
         if open_browser:
             instances = find_console_instances()
             ports = [port for item in instances for port in item.get("ports", [])]
+            if IS_WINDOWS and not ports:
+                ports = find_console_http_ports()
             if ports:
                 webbrowser.open("http://%s:%d/" % (HOST, min(ports)))
         return False

@@ -112,6 +112,8 @@ def check_required_files() -> str:
         "Makefile",
         "server.py",
         "start.command",
+        "start.ps1",
+        "start.cmd",
         "tests/test_server.py",
         "docs/screenshots/ops-launchpad.jpg",
         "docs/screenshots/ops-services.jpg",
@@ -391,7 +393,26 @@ def check_javascript_bindings() -> str:
     return f"{checked} 个模块，{len(shared)} 个公共可调用导出"
 
 
-def check_shell_and_plist() -> str:
+def check_launchers() -> str:
+    if os.name == "nt":
+        powershell = shutil.which("pwsh") or shutil.which("powershell")
+        require(bool(powershell), "未找到 PowerShell，无法检查 Windows 启动脚本")
+        script_path = str(ROOT / "start.ps1").replace("'", "''")
+        parser = (
+            "$tokens = $null; $parseErrors = $null; "
+            "[System.Management.Automation.Language.Parser]::ParseFile("
+            f"'{script_path}', [ref]$tokens, [ref]$parseErrors) | Out-Null; "
+            "if ($parseErrors.Count -gt 0) { "
+            "$parseErrors | ForEach-Object { Write-Error $_.Message }; exit 1 }"
+        )
+        command_output([
+            powershell, "-NoLogo", "-NoProfile", "-Command", parser,
+        ])
+        cmd_text = (ROOT / "start.cmd").read_text(encoding="utf-8").lower()
+        require("start.ps1" in cmd_text, "start.cmd 没有调用 start.ps1")
+        require("%*" in cmd_text, "start.cmd 没有透传命令行参数")
+        return "PowerShell 语法 + CMD 入口"
+
     shell_files = (
         ROOT / "start.command",
         ROOT / "总控台.app" / "Contents" / "MacOS" / "launcher",
@@ -611,7 +632,7 @@ def main() -> int:
         ("Python 语法", check_python_syntax),
         ("JavaScript 语法", check_javascript_syntax),
         ("JavaScript 模块绑定", check_javascript_bindings),
-        ("启动脚本与 plist", check_shell_and_plist),
+        ("平台启动脚本与 plist", check_launchers),
         ("开发依赖锁定", check_dev_requirements),
         ("素材来源台账", check_asset_provenance),
         ("主题注册表", check_themes),
